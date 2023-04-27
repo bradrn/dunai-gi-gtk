@@ -1,0 +1,35 @@
+cabal-version:      2.4
+name:               dunai-gi-gtk
+version:            0.1.0.0
+synopsis:
+-- description:
+homepage:
+-- bug-reports:
+license:            MIT
+license-file:       LICENSE
+author:             Brad Neimann
+maintainer:         brad.neimann@hotmail.com
+
+copyright:
+category:           FRP, GUI
+extra-source-files: CHANGELOG.md
+
+executable gi-gtk-br-test
+    main-is:          Main.hs
+    other-modules:    FRP.Dynamic
+                    , FRP.Gtk.Base
+                    , FRP.Gtk.Containers
+                    , FRP.Gtk.Widgets
+    ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+    build-depends:    base ^>=4.16.4.0
+                    , bearriver
+                    , dunai
+                    , containers
+                    , gi-gdk
+                    , gi-glib
+                    , gi-gtk == 3.0.*
+                    , haskell-gi-base
+                    , text
+                    , transformers
+    hs-source-dirs:   app
+    default-language: Haskell2010

@@ -1,0 +1,6 @@
+dist-*/
+.stack-work/
+*~
+*.exe
+*.a
+*.so
