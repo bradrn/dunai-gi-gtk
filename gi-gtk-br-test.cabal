@@ -24,7 +24,6 @@ executable gi-gtk-br-test
     build-depends:    base ^>=4.16.4.0
                     , bearriver
                     , dunai
-                    , containers
                     , gi-gdk
                     , gi-glib
                     , gi-gtk == 3.0.*

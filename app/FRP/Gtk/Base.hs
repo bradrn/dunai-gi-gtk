@@ -21,8 +21,6 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import qualified Data.Dynamic as D
 import Data.Foldable (for_)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
 import Data.Unique
 
 import Data.GI.Base hiding (get)
@@ -36,7 +34,7 @@ import Data.MonadicStreamFunction.InternalCore (MSF(..))
 import FRP.BearRiver
 
 data DownUp = DownUp
-    { down :: Map Unique D.Dynamic
+    { down :: Maybe (Unique, D.Dynamic)
     , up :: [(Unique, (D.Dynamic -> IO ()) -> IO ())]
     }
 type UI = StateT DownUp IO
@@ -48,12 +46,14 @@ trigger
 trigger h = do
     u <- liftIO newUnique
     let m = readerS $ stateS $ arr $ \(DownUp{down,up}, (_, ())) ->
-            case Map.lookup u down of
-                Just e ->
-                    ( DownUp (Map.delete u down) up
+            case down of
+                Just (u',e) | u==u' -> 
+                    let down' = (u',error "tried to access triggered event twice within an MSF!")
+                    in
+                    ( DownUp (Just down') up
                     , Event $ D.fromDyn @a e (error "dynamic type mismatch")
                     )
-                Nothing -> (DownUp down up, NoEvent)
+                _ -> (DownUp down up, NoEvent)
     lift $ modify $ \du -> du { up = (u,h) : up du }
     pure m
 
@@ -67,31 +67,31 @@ runGui m = do
     events <- newChan
 
     ((w, m'), du) <-
-        flip runStateT (DownUp Map.empty []) $
+        flip runStateT (DownUp Nothing []) $
         flip runReaderT 0 $
             reactimateE m
-    du' <- refreshGuiState win events (Event w) du
+    refreshGuiState win events (Event w) du
 
     void . forkIO $ do
-        runLoop win events m' du'
+        runLoop win events m'
         Gtk.mainQuit
 
     #showAll win
     Gtk.main
 
-runLoop :: Gtk.IsWidget w => Gtk.Window -> Chan (Unique, D.Dynamic) -> SF UI () (Event w) -> DownUp -> IO ()
-runLoop win events m du = do
+runLoop :: Gtk.IsWidget w => Gtk.Window -> Chan (Unique, D.Dynamic) -> SF UI () (Event w) -> IO ()
+runLoop win events m = do
     ev <- readChan events
 
-    (m', du'') <- runUI $ do
-        ((w, m'), du') <-
-            flip runStateT (du { down = uncurry Map.insert ev (down du) }) $
+    m' <- runUI $ do
+        ((w, m'), du) <-
+            flip runStateT (DownUp (Just ev) []) $
             flip runReaderT 0 $
                 unMSF m ()
-        du'' <- refreshGuiState win events w du'
-        pure (m', du'')
+        refreshGuiState win events w du
+        pure m'
 
-    runLoop win events m' du''
+    runLoop win events m'
   where
     -- from gi-gtk-declarative-simple
     runUI :: IO a -> IO a
@@ -110,7 +110,7 @@ reactimateE m = unMSF m () >>= \case
     (NoEvent, m') -> reactimateE m'
     (Event a, m') -> pure (a, m')
 
-refreshGuiState :: Gtk.IsWidget w => Gtk.Window -> Chan (Unique, D.Dynamic) -> Event w -> DownUp -> IO DownUp
+refreshGuiState :: Gtk.IsWidget w => Gtk.Window -> Chan (Unique, D.Dynamic) -> Event w -> DownUp -> IO ()
 refreshGuiState win events w du = do
     -- add main widget if changed
     case w of
@@ -119,4 +119,3 @@ refreshGuiState win events w du = do
 
     -- attach any new signal handlers
     for_ (up du) $ \(u,h) -> h $ \dyn -> writeChan events (u,dyn)
-    pure $ du { up=[] }
