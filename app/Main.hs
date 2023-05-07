@@ -12,6 +12,7 @@ import qualified Data.Text as T
 import qualified GI.Gtk as Gtk
 
 import Data.MonadicStreamFunction
+import Data.MonadicStreamFunction.InternalCore (MSF(..))
 import FRP.BearRiver
 
 -- from this package
@@ -35,7 +36,50 @@ accumBy1 f = eitherE >>> accumBy f' NoEvent >>> arr join
     f' (Event _) (Left a) = Event a
     f' NoEvent (Right ()) = NoEvent
     f' (Event a) (Right ()) = Event (f a)
+
+switchList :: Monad m => SF m (Event [SF m () b]) [b]
+switchList = switchList' []
+
+switchList' :: Monad m => [SF m () b] -> SF m (Event [SF m () b]) [b]
+switchList' c = switch ((parB c <<< constant ()) &&& (noEvent --> identity)) switchList'
+
     
+-- | A ‘hybrid’ switching combinator halfway between 'pSwitchB' and
+-- 'dpSwitchB'. When a switch event is received, the new SF is used at
+-- the time of switching (like 'pSwitchB'), but only accepts input
+-- 'Event's at later times (like 'dpSwitchB') to avoid infinite loops.
+hpSwitchB
+    :: (Monad m, Traversable col)
+    => col (SF m (Event a) b)
+    -> SF m (Event a, col b) (Event c)
+    -> (col (SF m (Event a) b) -> c -> SF m (Event a) (col b))
+    -> SF m (Event a) (col b)
+hpSwitchB sfs sfF sfCs = MSF $ \a -> do
+    res <- mapM (`unMSF` a) sfs
+    let bs   = fmap fst res
+        sfs' = fmap snd res
+    (e,sfF') <- unMSF sfF (a, bs)
+    case e of
+        Event c ->
+            let sfsSwitched = sfCs sfs' c
+            in unMSF sfsSwitched NoEvent
+        NoEvent -> pure (bs, hpSwitchB sfs' sfF' sfCs)
+
+dpSwitchB'
+    :: (Monad m , Traversable col)
+    => col (SF m a b)
+    -> SF m (a, col b) (Event c)
+    -> (col (SF m a b) -> c -> SF m a (col b))
+    -> SF m a (col b)
+dpSwitchB' sfs sfF sfCs = MSF $ \a -> do
+  res <- mapM (`unMSF` a) sfs
+  let bs   = fmap fst res
+      sfs' = fmap snd res
+  (e,sfF') <- unMSF sfF (a, bs)
+  let ct = case e of
+          Event c -> sfCs sfs' c
+          NoEvent -> dpSwitchB' sfs' sfF' sfCs
+  return (bs, ct)
 
 
 --------------------------
@@ -86,5 +130,26 @@ example2 = proc () -> do
         , (,True,False,0) . Some <$> l
         ]
 
+data CounterEvent = AddCounter
+    deriving (Show)
+
+-- Dynamic creation/destruction of widgets. Uses 'counterExample'.
+example3 :: SF UI () (Dynamic Gtk.Box)
+example3 = proc () -> do
+    (addEv, addBtn) <- button "+" -< ()
+    counterWidgets <- go [] -< addEv
+    box Gtk.OrientationHorizontal -< updated $ sequenceA $
+            (fmap ((,False,False,30) . Some) <$> counterWidgets)
+            ++ [fmap ((,True,True,0) . Some) addBtn]
+  where
+    go :: [SF UI (Event ()) (Dynamic Gtk.Box)] -> SF UI (Event ()) [(Dynamic Gtk.Box)]
+    go curState = hpSwitchB curState route nextState
+
+    route :: SF UI (Event (), [Dynamic Gtk.Box]) (Event CounterEvent)
+    route = arr $ \(e,_) -> AddCounter <$ e
+
+    nextState :: [SF UI (Event ()) (Dynamic Gtk.Box)] -> CounterEvent -> SF UI (Event ()) [Dynamic Gtk.Box]
+    nextState s AddCounter = go (s ++ [counterExample <<< constant ()])
+
 main :: IO ()
-main = runGui $ arr updated <<< counterExample
+main = runGui $ arr updated <<< example3
