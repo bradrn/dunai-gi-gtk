@@ -52,18 +52,19 @@ hpSwitchB
     :: (Monad m, Traversable col)
     => col (SF m (Event a) b)
     -> SF m (Event a, col b) (Event c)
-    -> (col (SF m (Event a) b) -> c -> SF m (Event a) (col b))
-    -> SF m (Event a) (col b)
+    -> (col (SF m (Event a) b) -> c -> SF m (Event a) (Dynamic (col b)))
+    -> SF m (Event a) (Dynamic (col b))
 hpSwitchB sfs sfF sfCs = MSF $ \a -> do
     res <- mapM (`unMSF` a) sfs
     let bs   = fmap fst res
         sfs' = fmap snd res
     (e,sfF') <- unMSF sfF (a, bs)
     case e of
-        Event c ->
+        Event c -> do
             let sfsSwitched = sfCs sfs' c
-            in unMSF sfsSwitched NoEvent
-        NoEvent -> pure (bs, hpSwitchB sfs' sfF' sfCs)
+            (bsSwitched, sfs'Switched) <- unMSF sfsSwitched NoEvent
+            pure (bsSwitched {modified=True}, sfs'Switched)
+        NoEvent -> pure (Dynamic False bs, hpSwitchB sfs' sfF' sfCs)
 
 dpSwitchB'
     :: (Monad m , Traversable col)
@@ -130,26 +131,47 @@ example2 = proc () -> do
         , (,True,False,0) . Some <$> l
         ]
 
-data CounterEvent = AddCounter
+data CounterEvent = AddCounter | RemoveCounter Int
     deriving (Show)
 
 -- Dynamic creation/destruction of widgets. Uses 'counterExample'.
 example3 :: SF UI () (Dynamic Gtk.Box)
 example3 = proc () -> do
     (addEv, addBtn) <- button "+" -< ()
-    counterWidgets <- go [] -< addEv
-    box Gtk.OrientationHorizontal -< updated $ sequenceA $
-            (fmap ((,False,False,30) . Some) <$> counterWidgets)
-            ++ [fmap ((,True,True,0) . Some) addBtn]
+    counterWidgets <- arr mkList <<< go [] -< addEv
+    box Gtk.OrientationHorizontal -< updated $
+        snoc <$> (fmap ((,False,False,30) . Some) <$> counterWidgets)
+             <*> fmap ((,True,True,0) . Some) addBtn
   where
-    go :: [SF UI (Event ()) (Dynamic Gtk.Box)] -> SF UI (Event ()) [(Dynamic Gtk.Box)]
+    go :: [SF UI (Event ()) (Event (), Dynamic Gtk.Box)] -> SF UI (Event ()) (Dynamic [(Event (), Dynamic Gtk.Box)])
     go curState = hpSwitchB curState route nextState
 
-    route :: SF UI (Event (), [Dynamic Gtk.Box]) (Event CounterEvent)
-    route = arr $ \(e,_) -> AddCounter <$ e
+    route :: SF UI (Event (), [(Event (), Dynamic Gtk.Box)]) (Event CounterEvent)
+    route = arr $ \(addEv, cs) -> mergeEvents $
+           (AddCounter <$ addEv) :
+           zipWith (\i (remEv, _) -> RemoveCounter i <$ remEv) [0..] cs
 
-    nextState :: [SF UI (Event ()) (Dynamic Gtk.Box)] -> CounterEvent -> SF UI (Event ()) [Dynamic Gtk.Box]
-    nextState s AddCounter = go (s ++ [counterExample <<< constant ()])
+    nextState :: [SF UI (Event ()) (Event (), Dynamic Gtk.Box)] -> CounterEvent -> SF UI (Event ()) (Dynamic [(Event (), Dynamic Gtk.Box)])
+    nextState s AddCounter = go (s ++ [removableCounter <<< constant ()])
+    nextState s (RemoveCounter i) = go $ removeAt i s
+
+    mkList :: Dynamic [(e, Dynamic b)] -> Dynamic [b]
+    mkList d = d >>= traverse snd
+
+    removeAt 0 (_:xs) = xs
+    removeAt n (x:xs) = x : removeAt (n-1) xs
+    removeAt _ [] = []
+
+    snoc xs x = xs ++ [x]
+
+    removableCounter = proc () -> do
+        counter <- counterExample -< ()
+        (removeEv, removeBtn) <- button "-" -< ()
+        cbox <- box Gtk.OrientationVertical -< updated $ sequenceA
+            [ (,False,False,0) . Some <$> counter
+            , (,False,False,0) . Some <$> removeBtn
+            ]
+        identity -< (removeEv, cbox)
 
 main :: IO ()
 main = runGui $ arr updated <<< example3

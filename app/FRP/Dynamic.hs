@@ -35,3 +35,13 @@ instance Applicative Dynamic where
         { modified = modified dx || modified dy
         , current = f (current dx) (current dy)
         }
+
+instance Monad Dynamic where
+    return = pure
+
+    d >>= f =
+        let d' = f (current d)
+        in Dynamic
+           { modified = modified d' || modified d
+           , current = current d'
+           }
